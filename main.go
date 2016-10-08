@@ -1,28 +1,25 @@
 package main
 
 import (
-	"log"
-	"os"
+	"flag"
 
-	"github.com/cmars/gonzodb/gonzo"
+	"github.com/gonzodb/gonzo"
+	"github.com/ngaut/log"
 )
 
-func die(err error) {
-	if err != nil {
-		log.Println(err)
-		os.Exit(1)
-	}
-	os.Exit(0)
-}
+var storePath = flag.String("path", "127.0.0.1:22379/pd?cluster=1", "gonzo storage path")
 
 func main() {
-	server, err := gonzo.NewServerAddr("tcp", ":47017")
+	flag.Parse()
+	log.SetLevelByString("info")
+
+	server, err := gonzo.NewServerAddr("tcp", ":28018", *storePath)
 	if err != nil {
-		die(err)
+		log.Fatal(err)
 	}
 	server.Start()
 	err = server.Wait()
 	if err != nil {
-		die(err)
+		log.Fatal(err)
 	}
 }

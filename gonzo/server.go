@@ -3,10 +3,10 @@ package gonzo
 import (
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 
+	"github.com/ngaut/log"
 	"gopkg.in/mgo.v2/bson"
 	"gopkg.in/tomb.v2"
 )
@@ -18,23 +18,34 @@ type Server struct {
 	t  tomb.Tomb
 }
 
-func NewServerAddr(netname, addr string) (*Server, error) {
+func NewServerAddr(netname, addr, storePath string) (*Server, error) {
 	ln, err := net.Listen(netname, addr)
 	if err != nil {
 		return nil, err
 	}
-	return NewServer(ln), nil
+	return NewServer(ln, storePath)
 }
 
-func NewServer(ln net.Listener) *Server {
+func NewServer(ln net.Listener, path string) (*Server, error) {
 	s := &Server{ln: ln}
-	s.Backend = NewMemoryBackend(&s.t)
-	return s
+	if len(path) == 0 {
+		log.Info("run mongo in memory")
+		s.Backend = NewMemoryBackend(&s.t)
+		return s, nil
+	}
+
+	log.Info("run mongo in TiKV")
+	backend, err := NewTikvBackend(&s.t, path)
+	if err != nil {
+		return nil, err
+	}
+	s.Backend = backend
+	return s, nil
 }
 
 func (s *Server) Start() {
 	s.t.Go(s.run)
-	log.Printf("gonzodb running pid=%d addr=%q", os.Getpid(), s.ln.Addr())
+	log.Infof("gonzodb running pid=%d addr=%q", os.Getpid(), s.ln.Addr())
 }
 
 func (s *Server) Wait() error {
@@ -50,7 +61,10 @@ func (s *Server) run() error {
 			if err != nil {
 				return
 			}
-			s.t.Go(func() error { s.handle(conn); return nil })
+			s.t.Go(func() error {
+				s.handle(conn)
+				return nil
+			})
 		}
 	})
 	<-s.t.Dying()
@@ -84,7 +98,7 @@ func respDoc(w io.Writer, requestID int32, docs ...interface{}) error {
 
 func respError(w io.Writer, requestID int32, err error) error {
 	if err != nil {
-		log.Println(err)
+		log.Info(err)
 	}
 	resp := NewOpReplyMsg(requestID, errReply(err))
 	return resp.Write(w)
@@ -93,6 +107,7 @@ func respError(w io.Writer, requestID int32, err error) error {
 func (s *Server) handle(c net.Conn) {
 	defer c.Close()
 	for {
+		log.Info("server handle")
 		select {
 		case <-s.t.Dying():
 			return
@@ -102,20 +117,12 @@ func (s *Server) handle(c net.Conn) {
 		h := &Header{}
 		err := h.Read(c)
 		if err != nil {
-			log.Printf("header read: %v", err)
+			log.Errorf("header read: %v", err)
 			return
 		}
 		switch h.OpCode {
-		//case OpReply:
-		//case OpMsg:
-		case OpUpdate:
-			update, err := NewOpUpdateMsg(h)
-			if err != nil {
-				respError(c, h.RequestID, err)
-				return
-			}
-			s.Backend.HandleUpdate(c, update)
 		case OpInsert:
+			log.Info("OpInsert")
 			insert, err := NewOpInsertMsg(h)
 			if err != nil {
 				respError(c, h.RequestID, err)
@@ -123,21 +130,30 @@ func (s *Server) handle(c net.Conn) {
 			}
 			s.Backend.HandleInsert(c, insert)
 		case OpQuery:
+			log.Info("OpQuery")
 			query, err := NewOpQueryMsg(h)
 			if err != nil {
 				respError(c, h.RequestID, err)
 				return
 			}
 			s.Backend.HandleQuery(c, query)
-		//case OpGetMore:
 		case OpDelete:
+			log.Info("OpDelete")
 			deleteMsg, err := NewOpDeleteMsg(h)
 			if err != nil {
 				respError(c, h.RequestID, err)
 				return
 			}
 			s.Backend.HandleDelete(c, deleteMsg)
-		//case OpKillCursors:
+		case OpUpdate:
+			log.Info("OpUpdate")
+			update, err := NewOpUpdateMsg(h)
+			if err != nil {
+				respError(c, h.RequestID, err)
+				return
+			}
+			s.Backend.HandleUpdate(c, update)
+			// TODO: support following options: OpReply, OpMsg, OpGetMore, OpKillCursors
 		default:
 			err := fmt.Errorf("unsupported op code %d", h.OpCode)
 			respError(c, h.RequestID, err)

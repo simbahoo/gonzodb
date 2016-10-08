@@ -4,11 +4,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"sync"
 
+	"github.com/ngaut/log"
 	"gopkg.in/mgo.v2/bson"
 	"gopkg.in/tomb.v2"
 )
@@ -86,6 +86,7 @@ func (db *MemoryDB) C(name string) Collection {
 func (db *MemoryDB) LastError() interface{} {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
+	log.Info("lastErr", db.lastErr)
 	return db.lastErr
 }
 
@@ -131,6 +132,7 @@ func (c *MemoryCollection) Match(pattern bson.M) (result []interface{}) {
 			result = append(result, doc)
 		}
 	}
+
 	return result
 }
 
@@ -165,19 +167,22 @@ func isPatternMatch(doc, pattern bson.M) bool {
 func (c *MemoryCollection) Insert(doc interface{}) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	mdoc, ok := doc.(bson.M)
 	if !ok {
 		return fmt.Errorf("cannot insert instance of this type: %v", doc)
 	}
+
 	var idStr string
 	if id, ok := mdoc["_id"]; ok {
-		idStr = id.(fmt.Stringer).String()
+		idStr = fmt.Sprintf("%s", id)
 	} else {
 		oid := bson.NewObjectId()
 		mdoc["_id"] = oid
 		idStr = oid.String()
 	}
 	c.docs[idStr] = mdoc
+
 	return nil
 }
 
@@ -223,10 +228,11 @@ func asBsonM(v interface{}) (bson.M, error) {
 }
 
 func (b *MemoryBackend) HandleQuery(c net.Conn, query *OpQueryMsg) {
+	log.Info("memory backend handle query")
 	if query.FullCollectionName == "admin.$cmd" {
 		err := b.handleAdminCommand(c, query)
 		if err != nil {
-			log.Println(err)
+			log.Errorf("memory backend handle query failed %v", err)
 		}
 		return
 	}
@@ -245,7 +251,7 @@ func (b *MemoryBackend) HandleQuery(c net.Conn, query *OpQueryMsg) {
 	if cname == "$cmd" {
 		err := b.handleDBCommand(c, db, query)
 		if err != nil {
-			log.Println(err)
+			log.Errorf("memory backend handle query failed %v", err)
 		}
 		return
 	}
@@ -316,7 +322,7 @@ func (b *MemoryBackend) HandleUpdate(c net.Conn, update *OpUpdateMsg) {
 		}
 		result.Upserted = id
 	}
-	db.SetLastError(result)
+	db.SetLastError(errReply(nil))
 }
 
 func applyUpdate(spec, target bson.M) error {
@@ -393,6 +399,7 @@ func (b *MemoryBackend) HandleDelete(c net.Conn, deleteMsg *OpDeleteMsg) {
 }
 
 func (b *MemoryBackend) HandleInsert(c net.Conn, insert *OpInsertMsg) {
+	log.Info("memory backend handle insert")
 	if strings.HasPrefix(insert.FullCollectionName, "admin.") {
 		respError(c, insert.RequestID, fmt.Errorf("insert not supported on admin.*"))
 		return
@@ -412,14 +419,15 @@ func (b *MemoryBackend) HandleInsert(c net.Conn, insert *OpInsertMsg) {
 	coll := db.C(cname)
 	for _, doc := range insert.Docs {
 		err := coll.Insert(doc)
-		db.SetLastError(err)
+		db.SetLastError(errReply(err))
 		if err != nil {
+			log.Errorf("memory backend handle insert failed %v", err)
 			return
 		}
 	}
 }
 
-// TODO: implement Collection interface instead
+// TODO: implement Collection interface instead.
 func (b *MemoryBackend) handleSystemQuery(c net.Conn, query *OpQueryMsg, dbname, cname string) {
 	switch cname {
 	case "system.namespaces":
@@ -437,9 +445,7 @@ func (b *MemoryBackend) handleSystemQuery(c net.Conn, query *OpQueryMsg, dbname,
 func (b *MemoryBackend) handleDBCommand(c net.Conn, db DB, query *OpQueryMsg) error {
 	var err error
 	switch cmd, arg := query.Command(); cmd {
-	case "getLastError":
-		fallthrough
-	case "getlasterror":
+	case "getLastError", "getlasterror":
 		return respDoc(c, query.RequestID, db.LastError())
 	case "getnonce":
 		nonce := make([]byte, 32)
@@ -472,6 +478,7 @@ func (b *MemoryBackend) handleDBCommand(c net.Conn, db DB, query *OpQueryMsg) er
 }
 
 func (b *MemoryBackend) handleAdminCommand(c net.Conn, query *OpQueryMsg) error {
+	log.Infof("memory admin db cmd")
 	switch cmd, arg := query.Command(); cmd {
 	case "getLog":
 		var msg bson.D
@@ -499,9 +506,26 @@ func (b *MemoryBackend) handleAdminCommand(c net.Conn, query *OpQueryMsg) error 
 			{"databases", dbinfos},
 		}))
 	case "replSetGetStatus":
-		return respError(c, query.RequestID, fmt.Errorf("not running with --replSet"))
+		members := make([]bson.M, 0)
+
+		member := bson.M{}
+		member["_id"] = 0
+		member["name"] = "localhost:47017"
+		member["health"] = 1
+		member["state"] = 1
+		member["stateStr"] = "PRIMARY"
+		member["self"] = true
+		members = append(members, member)
+
+		r := bson.D{
+			{"set", "repl"},
+			{"date", bson.Now()},
+			{"myState", 1},
+			{"members", members},
+		}
+		return respDoc(c, query.RequestID, r)
 	case "shutdown":
-		log.Println("shutdown requested")
+		log.Info("shutdown requested")
 		b.t.Kill(nil)
 		return c.Close()
 	case "whatsmyuri":

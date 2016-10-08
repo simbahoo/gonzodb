@@ -157,32 +157,27 @@ type OpQueryMsg struct {
 
 	// Bit vector of query options.
 	Flags QueryFlags
-
-	// "dbname.collectionname"
+	// The full name of a collection.
 	FullCollectionName string
-
-	// number of documents to skip
+	// Number of documents to skip.
 	NumberToSkip int32
-
-	// number of documents to return in the first OP_REPLY batch
+	// Number of documents to return in the first OP_REPLY batch.
 	NumberToReturn int32
-
-	// query object.  See below for details.
+	// Query object.  See below for details.
 	Doc bson.D
-
 	// Optional. Selector indicating the fields to return.
 	ReturnFieldsSelector bson.D
 }
 
-func (m *OpQueryMsg) Command() (cmd string, arg interface{}) {
-	for _, kv := range m.Doc {
+func (msg *OpQueryMsg) Command() (cmd string, arg interface{}) {
+	for _, kv := range msg.Doc {
 		return kv.Name, kv.Value
 	}
 	return "", nil
 }
 
-func (m *OpQueryMsg) Get(key string) (interface{}, bool) {
-	for _, kv := range m.Doc {
+func (msg *OpQueryMsg) Get(key string) (interface{}, bool) {
+	for _, kv := range msg.Doc {
 		if kv.Name == key {
 			return kv.Value, true
 		}
@@ -191,36 +186,36 @@ func (m *OpQueryMsg) Get(key string) (interface{}, bool) {
 }
 
 func NewOpQueryMsg(h *Header) (*OpQueryMsg, error) {
-	m := &OpQueryMsg{Header: h}
+	msg := &OpQueryMsg{Header: h}
 	b := h.Contents
 
 	flags, b, ok := readInt32(b)
 	if !ok {
 		return nil, errTruncMsg
 	} else {
-		m.Flags = QueryFlags(flags)
+		msg.Flags = QueryFlags(flags)
 	}
 
-	if m.FullCollectionName, b, ok = readCstring(b); !ok {
+	if msg.FullCollectionName, b, ok = readCstring(b); !ok {
 		return nil, errTruncMsg
 	}
-	if m.NumberToSkip, b, ok = readInt32(b); !ok {
+	if msg.NumberToSkip, b, ok = readInt32(b); !ok {
 		return nil, errTruncMsg
 	}
-	if m.NumberToReturn, b, ok = readInt32(b); !ok {
+	if msg.NumberToReturn, b, ok = readInt32(b); !ok {
 		return nil, errTruncMsg
 	}
 
 	var err error
-	if b, err = readBsonDoc(b, &m.Doc); err != nil {
+	if b, err = readBsonDoc(b, &msg.Doc); err != nil {
 		return nil, err
 	}
 	if len(b) > 0 {
-		if b, err = readBsonDoc(b, &m.ReturnFieldsSelector); err != nil {
+		if b, err = readBsonDoc(b, &msg.ReturnFieldsSelector); err != nil {
 			return nil, err
 		}
 	}
-	return m, nil
+	return msg, nil
 }
 
 type InsertFlags int32
@@ -234,26 +229,24 @@ type OpInsertMsg struct {
 
 	// Bit vector of query options.
 	Flags InsertFlags
-
-	// "dbname.collectionname"
+	// The full name of the collection.
 	FullCollectionName string
-
-	// one or more documents to insert into the collection
+	// One or more documents to insert into the collection.
 	Docs []bson.M
 }
 
 func NewOpInsertMsg(h *Header) (*OpInsertMsg, error) {
-	m := &OpInsertMsg{Header: h}
+	msg := &OpInsertMsg{Header: h}
 	b := h.Contents
 
 	flags, b, ok := readInt32(b)
 	if !ok {
 		return nil, errTruncMsg
 	} else {
-		m.Flags = InsertFlags(flags)
+		msg.Flags = InsertFlags(flags)
 	}
 
-	if m.FullCollectionName, b, ok = readCstring(b); !ok {
+	if msg.FullCollectionName, b, ok = readCstring(b); !ok {
 		return nil, errTruncMsg
 	}
 
@@ -263,30 +256,24 @@ func NewOpInsertMsg(h *Header) (*OpInsertMsg, error) {
 		if b, err = readBsonDoc(b, mdoc); err != nil {
 			return nil, err
 		}
-		m.Docs = append(m.Docs, mdoc)
+		msg.Docs = append(msg.Docs, mdoc)
 	}
-	return m, nil
+	return msg, nil
 }
 
 type OpReplyMsg struct {
 	*Header
 
-	// bit vector - see details below
+	// Bit vector - see details below.
 	ResponseFlags int32
-
-	// cursor id if client needs to do get more's
+	// Cursor id if client needs to do get more's.
 	CursorID int64
-
-	// where in the cursor this reply is starting
+	// Where in the cursor this reply is starting.
 	StartingFrom int32
-
-	// number of documents in the reply
+	// Number of documents in the reply.
 	NumberReturned int32
-
-	// documents
-	Docs []interface{}
-
-	responseTo int32
+	Docs           []interface{}
+	responseTo     int32
 }
 
 func NewOpReplyMsg(responseTo int32, docs ...interface{}) *OpReplyMsg {
@@ -301,16 +288,16 @@ func NewOpReplyMsg(responseTo int32, docs ...interface{}) *OpReplyMsg {
 	}
 }
 
-func (m *OpReplyMsg) Write(w io.Writer) error {
+func (msg *OpReplyMsg) Write(w io.Writer) error {
 	b := make([]byte, 8)
 	var out bytes.Buffer
 
-	writeInt32(&out, b, m.ResponseFlags)
-	writeInt64(&out, b, m.CursorID)
-	writeInt32(&out, b, m.StartingFrom)
-	writeInt32(&out, b, m.NumberReturned)
+	writeInt32(&out, b, msg.ResponseFlags)
+	writeInt64(&out, b, msg.CursorID)
+	writeInt32(&out, b, msg.StartingFrom)
+	writeInt32(&out, b, msg.NumberReturned)
 
-	for _, doc := range m.Docs {
+	for _, doc := range msg.Docs {
 		b, err := bson.Marshal(doc)
 		if err != nil {
 			return err
@@ -320,9 +307,9 @@ func (m *OpReplyMsg) Write(w io.Writer) error {
 			return err
 		}
 	}
-	m.Header.Contents = out.Bytes()
-	m.Header.Length = int32(out.Len() + 16)
-	return m.Header.Write(w)
+	msg.Header.Contents = out.Bytes()
+	msg.Header.Length = int32(out.Len() + 16)
+	return msg.Header.Write(w)
 }
 
 type UpdateFlags int32
@@ -342,31 +329,26 @@ type OpUpdateMsg struct {
 	*Header
 
 	zero int32
-
 	// "dbname.collectionname"
 	FullCollectionName string
-
 	// Bit vector of update options.
 	Flags UpdateFlags
-
 	// Selector is the query to select the document.
 	Selector bson.M
-
 	// Update is the document update specification.
 	Update bson.M
 }
 
 func NewOpUpdateMsg(h *Header) (*OpUpdateMsg, error) {
-	m := &OpUpdateMsg{Header: h}
+	msg := &OpUpdateMsg{Header: h}
 	b := h.Contents
 
 	var ok bool
-
-	if m.zero, b, ok = readInt32(b); !ok {
+	if msg.zero, b, ok = readInt32(b); !ok {
 		return nil, errTruncMsg
 	}
 
-	if m.FullCollectionName, b, ok = readCstring(b); !ok {
+	if msg.FullCollectionName, b, ok = readCstring(b); !ok {
 		return nil, errTruncMsg
 	}
 
@@ -374,13 +356,13 @@ func NewOpUpdateMsg(h *Header) (*OpUpdateMsg, error) {
 	if !ok {
 		return nil, errTruncMsg
 	} else {
-		m.Flags = UpdateFlags(flags)
+		msg.Flags = UpdateFlags(flags)
 	}
 
 	var err error
 	if len(b) > 0 {
-		m.Selector = make(bson.M)
-		if b, err = readBsonDoc(b, m.Selector); err != nil {
+		msg.Selector = make(bson.M)
+		if b, err = readBsonDoc(b, msg.Selector); err != nil {
 			return nil, err
 		}
 	} else {
@@ -388,15 +370,15 @@ func NewOpUpdateMsg(h *Header) (*OpUpdateMsg, error) {
 	}
 
 	if len(b) > 0 {
-		m.Update = make(bson.M)
-		if b, err = readBsonDoc(b, m.Update); err != nil {
+		msg.Update = make(bson.M)
+		if b, err = readBsonDoc(b, msg.Update); err != nil {
 			return nil, err
 		}
 	} else {
 		return nil, errTruncMsg
 	}
 
-	return m, nil
+	return msg, nil
 }
 
 type DeleteFlags int32
@@ -421,16 +403,16 @@ type OpDeleteMsg struct {
 }
 
 func NewOpDeleteMsg(h *Header) (*OpDeleteMsg, error) {
-	m := &OpDeleteMsg{Header: h}
+	msg := &OpDeleteMsg{Header: h}
 	b := h.Contents
 
 	var ok bool
 
-	if m.zero, b, ok = readInt32(b); !ok {
+	if msg.zero, b, ok = readInt32(b); !ok {
 		return nil, errTruncMsg
 	}
 
-	if m.FullCollectionName, b, ok = readCstring(b); !ok {
+	if msg.FullCollectionName, b, ok = readCstring(b); !ok {
 		return nil, errTruncMsg
 	}
 
@@ -438,18 +420,18 @@ func NewOpDeleteMsg(h *Header) (*OpDeleteMsg, error) {
 	if !ok {
 		return nil, errTruncMsg
 	} else {
-		m.Flags = DeleteFlags(flags)
+		msg.Flags = DeleteFlags(flags)
 	}
 
 	var err error
 	if len(b) > 0 {
-		m.Selector = make(bson.M)
-		if b, err = readBsonDoc(b, m.Selector); err != nil {
+		msg.Selector = make(bson.M)
+		if b, err = readBsonDoc(b, msg.Selector); err != nil {
 			return nil, err
 		}
 	} else {
 		return nil, errTruncMsg
 	}
 
-	return m, nil
+	return msg, nil
 }
